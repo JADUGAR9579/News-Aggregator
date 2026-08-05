@@ -110,39 +110,52 @@ Copy `.env.example` to `.env` and fill in whichever you need — every bonus fea
 
 | Variable | Required for | Where to get a key |
 |---|---|---|
-| `VITE_NEWS_API_KEY` | Core app (all news fetching) | [gnews.io](https://gnews.io) (free tier) |
-| `VITE_NEWS_API_BASE_URL` | Core app | Defaults to `https://gnews.io/api/v4` |
+| `VITE_NEWS_API_KEY` | Local dev only (`npm run dev`) | [gnews.io](https://gnews.io) (free tier) |
+| `VITE_NEWS_API_BASE_URL` | Local dev only | Defaults to `https://gnews.io/api/v4` |
+| `GNEWS_API_KEY` | **Production on Vercel** — read server-side by `api/news/[...path].js`, never shipped to the browser. Set this in Vercel's dashboard, not in `.env`. | Same key as above |
 | `VITE_SUMMARY_API_KEY` | AI summarization | [Groq](https://console.groq.com) (free tier) or any OpenAI-compatible provider |
 | `VITE_SUMMARY_API_URL` | AI summarization | Defaults to Groq's chat completions endpoint |
 | `VITE_WEATHER_API_KEY` | Weather widget | [OpenWeatherMap](https://openweathermap.org/api) (free tier) |
 | `VITE_WEATHER_API_URL` | Weather widget | Defaults to `https://api.openweathermap.org/data/2.5` |
 
+Note the split for the news API specifically: `VITE_NEWS_API_KEY` only matters locally, where it's injected client-side for simplicity since the Vite dev-server proxy makes CORS a non-issue anyway. In production, `GNEWS_API_KEY` (no `VITE_` prefix) is what actually gets used — see below for why.
+
 ## API Configuration
 
-The app is wired to [GNews](https://docs.gnews.io)'s contract by default (`apikey`/`category`/`lang`/`country`/`max`/`page` on `/top-headlines`, `q`/`lang`/`country`/`max`/`sortby`/`page` on `/search`). To use a different provider (e.g. NewsAPI.org), adjust the query param names in `src/services/newsApi.js` and set `VITE_NEWS_API_BASE_URL` accordingly.
+The app is wired to [GNews](https://docs.gnews.io)'s contract by default (`apikey`/`category`/`lang`/`country`/`max`/`page` on `/top-headlines`, `q`/`lang`/`country`/`max`/`sortby`/`page` on `/search`). To use a different provider (e.g. NewsAPI.org), adjust the query param names in `src/services/newsApi.js` and, if you're on Vercel, in `api/news/[...path].js` too.
 
-**CORS note:** whether GNews allows direct browser calls in production isn't consistently documented. In development, requests are automatically routed through a Vite dev-server proxy (`vite.config.js` → `server.proxy["/news-api"]`) so this never matters locally. In production, if you hit a CORS error, put a small server-side proxy or serverless function in front of the API and point `VITE_NEWS_API_BASE_URL` at that instead.
+**CORS is confirmed to block direct browser calls to GNews in production** — verified against a real deployment: GNews returns `200` server-side, but the browser refuses to expose the response because there's no `Access-Control-Allow-Origin` header. This isn't a maybe.
+
+- **In development**, requests go through the Vite dev-server proxy (`vite.config.js` → `server.proxy["/news-api"]`), so this never matters locally.
+- **In production on Vercel**, requests go through `api/news/[...path].js`, a serverless function that calls GNews server-side (same-origin from the browser's perspective, so CORS doesn't apply) and injects `GNEWS_API_KEY` there instead of shipping it in the client bundle.
+- **On Netlify or GitHub Pages**, you'll need an equivalent same-origin proxy — a Netlify Function for the former; GitHub Pages has no server-side capability at all, so this genuinely can't be solved there without pointing at an external proxy you host elsewhere.
+
+**Security note:** `VITE_`-prefixed environment variables are baked into the public JS bundle at build time — anyone can read them straight out of devtools or the bundle source. If you've already deployed with only `VITE_NEWS_API_KEY` set (no server-side proxy in front of it), treat that key as burned and generate a new one at gnews.io before switching to the `GNEWS_API_KEY` server-side setup described here.
 
 ## Deployment
 
 The app is a static SPA (`vite build` → `dist/`) and deploys to any static host. Configs are included for three:
 
 ### Vercel
-`vercel.json` is already set up (build command, output dir, SPA rewrite). Import the repo in the Vercel dashboard, or:
+`vercel.json` is already set up (build command, output dir, SPA rewrite), and `api/news/[...path].js` is a serverless function that proxies GNews requests server-side — required, not optional, since GNews blocks direct browser calls (see API Configuration above). Import the repo in the Vercel dashboard, or:
 ```bash
 npx vercel
 ```
-Add your `VITE_*` variables under Project Settings → Environment Variables.
+Under Project Settings → Environment Variables, add:
+- `GNEWS_API_KEY` — **not** `VITE_`-prefixed; this is what the serverless function actually uses in production
+- `VITE_SUMMARY_API_KEY` / `VITE_SUMMARY_API_URL` / `VITE_WEATHER_API_KEY` / `VITE_WEATHER_API_URL` if you want those bonus features working
+
+After adding/changing environment variables, trigger a fresh deployment — Vite bakes `VITE_*` vars into the bundle at build time, so an existing deployment won't pick up a variable added after the fact.
 
 ### Netlify
-`netlify.toml` is already set up. Import the repo in the Netlify dashboard, or:
+`netlify.toml` is already set up. **Not yet fixed for the CORS issue** — this repo only includes the Vercel serverless proxy; add an equivalent Netlify Function under `netlify/functions/` that mirrors `api/news/[...path].js` before relying on a Netlify deployment for real news data. Import the repo in the Netlify dashboard, or:
 ```bash
 npx netlify deploy --prod
 ```
 Add your `VITE_*` variables under Site Settings → Environment Variables.
 
 ### GitHub Pages
-GitHub Pages has no server, so client-side routing needs a small workaround (`public/404.html` + a decoder script in `index.html`, the well-known [`spa-github-pages`](https://github.com/rafgraph/spa-github-pages) pattern) — already included.
+GitHub Pages has no server, so client-side routing needs a small workaround (`public/404.html` + a decoder script in `index.html`, the well-known [`spa-github-pages`](https://github.com/rafgraph/spa-github-pages) pattern) — already included. **It also has no way to solve the CORS issue** (see API Configuration above) — a GitHub Pages deployment of this app will not be able to fetch news at all unless you point it at an external proxy you host somewhere else.
 
 1. In the repo, go to **Settings → Pages → Source** and select **GitHub Actions**.
 2. Add your API keys as **repository secrets** (`VITE_NEWS_API_KEY`, etc.) — the workflow reads them from there.
@@ -184,4 +197,3 @@ Built by **Shivnath**.
 ## License
 
 MIT — see [LICENSE](./LICENSE).
-\nVerified remote update on 2026-08-03

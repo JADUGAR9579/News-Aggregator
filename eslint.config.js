@@ -55,6 +55,12 @@ export default [
     },
   },
   {
+    files: ["api/**/*.js"],
+    languageOptions: {
+      globals: { process: "readonly" },
+    },
+  },
+  {
     files: ["src/context/**/*.jsx"],
     rules: { "react-refresh/only-export-components": "off" },
   },
