@@ -1,23 +1,12 @@
 /**
  * /api/news/[...path]
  *
- * Server-side proxy to GNews. Exists because:
- *
- * 1. CORS: GNews does not send Access-Control-Allow-Origin, so direct
- *    browser calls are blocked outright in production (confirmed via a
- *    real deployment -- requests return 200 server-side but the browser
- *    refuses to let JS read the response). A server-to-server call has no
- *    such restriction, and the browser only ever talks to this same-origin
- *    endpoint, so there's nothing for CORS to block.
- *
- * 2. Key exposure: VITE_-prefixed env vars are baked into the public JS
- *    bundle at build time -- anyone can read VITE_NEWS_API_KEY straight out
- *    of devtools or the bundle source. GNEWS_API_KEY (no VITE_ prefix) is
- *    read here, server-side only, and never shipped to the browser at all.
- *
- * Deployed as a Vercel serverless function (Node.js runtime, default).
- * Configure GNEWS_API_KEY in Vercel -> Project -> Settings -> Environment
- * Variables (NOT prefixed with VITE_ -- that distinction matters, see #2).
+ * Server-side proxy to GNews. See git history for the full rationale
+ * (CORS + API key exposure). This version parses the endpoint directly
+ * from req.url instead of relying on Vercel's req.query.path population
+ * for the catch-all route, which was returning empty/unreliable in
+ * practice -- parsing the URL ourselves is deterministic regardless of
+ * how the platform handles dynamic route query params.
  */
 export default async function handler(req, res) {
   if (req.method !== "GET") {
@@ -34,20 +23,20 @@ export default async function handler(req, res) {
     return;
   }
 
-  // req.query.path holds the [...path] segments as an array, e.g.
-  // /api/news/top-headlines -> ["top-headlines"]
-  const segments = Array.isArray(req.query.path) ? req.query.path : [req.query.path];
-  const endpoint = segments.filter(Boolean).join("/");
+  const requestUrl = new URL(req.url, "http://localhost");
+  // requestUrl.pathname looks like /api/news/top-headlines -- drop the
+  // leading "api/news" segments to get just the GNews endpoint name.
+  const segments = requestUrl.pathname.split("/").filter(Boolean);
+  const endpoint = segments.slice(2).join("/");
 
   const allowedEndpoints = new Set(["top-headlines", "search"]);
   if (!allowedEndpoints.has(endpoint)) {
-    res.status(404).json({ message: `Unknown endpoint: ${endpoint}` });
+    res.status(404).json({ message: `Unknown endpoint: ${endpoint || "(empty)"}` });
     return;
   }
 
   const upstream = new URL(`https://gnews.io/api/v4/${endpoint}`);
-  for (const [key, value] of Object.entries(req.query)) {
-    if (key === "path") continue; // routing artifact, not a real GNews param
+  for (const [key, value] of requestUrl.searchParams.entries()) {
     upstream.searchParams.set(key, value);
   }
   upstream.searchParams.set("apikey", apiKey);
